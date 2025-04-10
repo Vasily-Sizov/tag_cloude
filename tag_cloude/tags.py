@@ -2,7 +2,7 @@ import logging
 import re
 import time
 from typing import Dict, List, Tuple
-
+from tqdm import tqdm
 import ahocorasick
 import pandas as pd
 from pymorphy2 import MorphAnalyzer
@@ -172,7 +172,7 @@ class DialogProcessor:
         logger.info("Начало подсчета вхождений в диалогах.")
         total_time = 0
 
-        for dialog in dialogs:
+        for dialog in tqdm(dialogs):
             start_time = time.time()
             result = self.process_single_dialog(dialog)
             results.append(result)
@@ -320,7 +320,8 @@ class ExactWordDialogProcessor(DialogProcessor):
         self, client_texts: List[str], operator_texts: List[str]
     ) -> Tuple[Dict[str, int], Dict[str, int]]:
         """
-        Подсчитывает точные вхождения слов и фраз в текстах клиента и оператора.
+        Подсчитывает точные вхождения слов и фраз в текстах клиента и оператора,
+        используя автомат Ахо-Корасик с проверкой границ слов.
 
         :param client_texts: Список текстов клиента.
         :param operator_texts: Список текстов оператора.
@@ -329,21 +330,31 @@ class ExactWordDialogProcessor(DialogProcessor):
         client_counts = {}
         operator_counts = {}
 
+        # Обработка текстов клиента
         for client_text in client_texts:
+            # Лемматизируем текст
             words = re.findall(r"\b\w+\b", client_text.lower())
             lemmatized_words = [
                 self.morph.parse(word)[0].normal_form for word in words
             ]
             lemmatized_text = " ".join(lemmatized_words)
 
-            for keyword in self.automaton:
-                pattern = r"\b" + re.escape(keyword) + r"\b"
-                matches = re.findall(pattern, lemmatized_text)
-                if matches:
-                    client_counts[keyword] = client_counts.get(
-                        keyword, 0
-                    ) + len(matches)
+            # Используем автомат для поиска
+            for end_pos, found_word in self.automaton.iter(lemmatized_text):
+                start_pos = end_pos - len(found_word) + 1
+                # Проверяем границы слова
+                is_word_boundary = (
+                    start_pos == 0 or lemmatized_text[start_pos - 1] == " "
+                ) and (
+                    end_pos + 1 == len(lemmatized_text)
+                    or lemmatized_text[end_pos + 1] == " "
+                )
+                if is_word_boundary:
+                    client_counts[found_word] = (
+                        client_counts.get(found_word, 0) + 1
+                    )
 
+        # Обработка текстов оператора
         for operator_text in operator_texts:
             words = re.findall(r"\b\w+\b", operator_text.lower())
             lemmatized_words = [
@@ -351,14 +362,20 @@ class ExactWordDialogProcessor(DialogProcessor):
             ]
             lemmatized_text = " ".join(lemmatized_words)
 
-            for keyword in self.automaton:
-                pattern = r"\b" + re.escape(keyword) + r"\b"
-                matches = re.findall(pattern, lemmatized_text)
-                if matches:
-                    operator_counts[keyword] = operator_counts.get(
-                        keyword, 0
-                    ) + len(matches)
+            for end_pos, found_word in self.automaton.iter(lemmatized_text):
+                start_pos = end_pos - len(found_word) + 1
+                is_word_boundary = (
+                    start_pos == 0 or lemmatized_text[start_pos - 1] == " "
+                ) and (
+                    end_pos + 1 == len(lemmatized_text)
+                    or lemmatized_text[end_pos + 1] == " "
+                )
+                if is_word_boundary:
+                    operator_counts[found_word] = (
+                        operator_counts.get(found_word, 0) + 1
+                    )
 
+        # Сортируем результаты
         sorted_client_counts = dict(
             sorted(
                 client_counts.items(), key=lambda item: item[1], reverse=True
